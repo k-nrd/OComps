@@ -1,0 +1,6 @@
+(library
+ (name ntt_ppx)
+ (kind ppx_deriver)
+ (libraries ppxlib))
+
+(include_subdirs qualified)
