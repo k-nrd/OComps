@@ -3,7 +3,9 @@ type velocity = { vx : float; vy : float }
 type health = private int
 
 type component =
-  [ `Position of position | `Velocity of velocity | `Health of health ]
+  | Position of position
+  | Velocity of velocity
+  | Health of health
 
 open Containers
 open Entity_allocator
@@ -11,46 +13,40 @@ module List = ListLabels
 module IntSet = Set.Make (Int)
 
 (* PPX-generated *)
-type component_type = [ `Position | `Velocity | `Health ]
+type component_type = PositionComponent | VelocityComponent | HealthComponent
 
 (* PPX-generated *)
-type component_storage =
-  | PositionStorage : position Vector.vector -> component_storage
-  | VelocityStorage : velocity Vector.vector -> component_storage
-  | HealthStorage : health Vector.vector -> component_storage
+type component_store =
+  | PositionStorage of position Vector.vector
+  | VelocityStorage of velocity Vector.vector
+  | HealthStorage of health Vector.vector
+
+(* PPX-generated *)
+let get_comp_type (comp : component) : component_type =
+  match comp with
+  | Position _ -> PositionComponent
+  | Velocity _ -> VelocityComponent
+  | Health _ -> HealthComponent
+[@@inline]
+
+(* PPX-generated *)
+let get_comp_type_id (comp_type : component_type) =
+  match comp_type with
+  | PositionComponent -> 0
+  | VelocityComponent -> 1
+  | HealthComponent -> 2
+[@@inline]
 
 type archetype = {
   mask : IntSet.t;
   entities : int Vector.vector;
-  component_stores : (int, component_storage) Hashtbl.t;
+  component_stores : (int, component_store) Hashtbl.t;
 }
 
 type world = {
   entity_allocator : EntityAllocator.t;
   archetypes : (int, archetype) Hashtbl.t;
 }
-
-(* PPX-generated *)
-let get_comp_type (comp : component) : component_type =
-  match comp with
-  | `Position _ -> `Position
-  | `Velocity _ -> `Velocity
-  | `Health _ -> `Health
-[@@inline]
-
-(* PPX-generated *)
-let get_comp_type_id (comp_type : component_type) : int =
-  match comp_type with `Position -> 0 | `Velocity -> 1 | `Health -> 2
-[@@inline]
-
-(* PPX-generated *)
-let get_comp_id (comp : component) : int =
-  match comp with `Position _ -> 0 | `Velocity _ -> 1 | `Health _ -> 2
-[@@inline]
-
-let get_comp_store archetype comp_type_id =
-  Hashtbl.find archetype.component_stores comp_type_id
-[@@inline]
 
 let get world entity (comp_type : component_type) =
   (* User input, they might make this fail so we should raise a nice error *)
@@ -63,43 +59,43 @@ let get world entity (comp_type : component_type) =
     let f store = Vector.get store entity_location.index_in_archetype in
     let comp =
       (* PPX-generated *)
-      match get_comp_store archetype comp_type_id with
-      | PositionStorage store -> `Position (f store)
-      | VelocityStorage store -> `Velocity (f store)
-      | HealthStorage store -> `Health (f store)
+      match Hashtbl.find archetype.component_stores comp_type_id with
+      | PositionStorage store -> Position (f store)
+      | VelocityStorage store -> Velocity (f store)
+      | HealthStorage store -> Health (f store)
     in
     Some comp
   else None
 [@@inline]
 
-let insert world entity (comp : component) =
+let insert world entity comp =
   (* User input, they might make this fail so we should raise a nice error *)
   let entity_location = EntityAllocator.get world.entity_allocator entity in
   (* Internal, should never fail *)
   let archetype = Hashtbl.find world.archetypes entity_location.archetype_id in
-  let comp_type_id = get_comp_id comp in
+  let comp_type_id = comp |> get_comp_type |> get_comp_type_id in
   if IntSet.mem comp_type_id archetype.mask then
     (* If component exists in archetype, just overwrite *)
     let f store data =
       (* Internal, should never fail *)
       Vector.set store entity_location.index_in_archetype data
     in
-    match get_comp_store archetype comp_type_id with
+    match Hashtbl.find archetype.component_stores comp_type_id with
     (* PPX-generated *)
     | PositionStorage store -> begin
         match comp with
-        | `Position data -> f store data
-        | _ -> raise (Invalid_argument "error setting component")
+        | Position data -> f store data
+        | _ -> raise (Invalid_argument "error")
       end
     | VelocityStorage store -> begin
         match comp with
-        | `Velocity data -> f store data
-        | _ -> raise (Invalid_argument "error setting component")
+        | Velocity data -> f store data
+        | _ -> raise (Invalid_argument "error")
       end
     | HealthStorage store -> begin
         match comp with
-        | `Health data -> f store data
-        | _ -> raise (Invalid_argument "error setting component")
+        | Health data -> f store data
+        | _ -> raise (Invalid_argument "error")
       end
   else
     (*
@@ -135,7 +131,8 @@ let remove world (entity : int) (comp_type : component_type) : unit =
 let get_bundle_set comps =
   comps
   |> Seq.of_list
-  |> Seq.map get_comp_id
+  |> Seq.map get_comp_type
+  |> Seq.map get_comp_type_id
   |> Seq.sort_uniq ~cmp:Int.compare
   |> Seq.fold (fun set cur -> IntSet.add cur set) IntSet.empty
 
