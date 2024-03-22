@@ -1,11 +1,11 @@
 (lang dune 3.14)
 
-(name ntt)
+(name ocomps)
 
 (generate_opam_files true)
 
 (source
- (github k-nrd/ntt-ml))
+ (github k-nrd/ocomps))
 
 (authors "Gustavo Konrad")
 
@@ -16,12 +16,12 @@
 (documentation https://url/to/documentation)
 
 (package
- (name ntt)
+ (name ocomps)
  (synopsis
-  "NTT is an ECS library with good performance and nice ergonomics.")
+  "OComps is an ECS library with good performance and nice ergonomics.")
  (description "A longer description")
  (depends ocaml dune ppxlib containers)
  (tags
-  (topics "to describe" your project)))
+  (topics ecs "entity component system" "games" "entity" "component" "system")))
 
 ; See the complete stanza docs at https://dune.readthedocs.io/en/stable/dune-files.html#dune-project
