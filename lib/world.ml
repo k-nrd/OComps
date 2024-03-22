@@ -1,46 +1,106 @@
+(* Userland code *)
 type position = { x : float; y : float }
 type velocity = { vx : float; vy : float }
 type health = private int
 
-type component =
-  | Position of position
-  | Velocity of velocity
-  | Health of health
+type _ component =
+  | Position : position -> position component
+  | Velocity : velocity -> velocity component
+  | Health : health -> health component
 
+(* Library code *)
 open Containers
-open Entity_allocator
+open Generational_allocator
 module List = ListLabels
 module IntSet = Set.Make (Int)
 
 (* PPX-generated *)
-type component_type = PositionComponent | VelocityComponent | HealthComponent
+type _ component_type =
+  | PositionComponent : position component_type
+  | VelocityComponent : velocity component_type
+  | HealthComponent : health component_type
+
+type 'a component_store = 'a Vector.vector
 
 (* PPX-generated *)
-type component_store =
-  | PositionStorage of position Vector.vector
-  | VelocityStorage of velocity Vector.vector
-  | HealthStorage of health Vector.vector
-
-(* PPX-generated *)
-let get_comp_type (comp : component) : component_type =
-  match comp with
+let get_comp_type : type a. a component -> a component_type = function
   | Position _ -> PositionComponent
   | Velocity _ -> VelocityComponent
   | Health _ -> HealthComponent
 [@@inline]
 
 (* PPX-generated *)
-let get_comp_type_id (comp_type : component_type) =
-  match comp_type with
+let get_comp_type_id : type a. a component_type -> int = function
   | PositionComponent -> 0
   | VelocityComponent -> 1
   | HealthComponent -> 2
 [@@inline]
 
+type (_, _) eq = Eq : ('a, 'a) eq
+
+(* PPX generated *)
+let eq_comp_type :
+    type a b. a component_type * b component_type -> (a, b) eq option = function
+  | PositionComponent, PositionComponent -> Some Eq
+  | VelocityComponent, VelocityComponent -> Some Eq
+  | HealthComponent, HealthComponent -> Some Eq
+  | _ -> None
+[@@inline]
+
+(* PPX generated *)
+let component_map : type a b. f:(a -> b) -> a component -> b =
+ fun ~f comp ->
+  match comp with
+  | Position data -> f data
+  | Velocity data -> f data
+  | Health data -> f data
+[@@inline]
+
+let swap_remove vector idx =
+  match Vector.length vector with
+  | 0 -> None
+  | n ->
+      let last = Vector.pop_exn vector in
+      if n = 1 then Some last
+      else begin
+        let removed = Vector.get vector idx in
+        Vector.set vector idx last;
+        Some removed
+      end
+[@@inline]
+
+type any_component = AnyComponent : 'a component -> any_component
+
+type any_store =
+  | AnyStore : 'a component_type * 'a component_store -> any_store
+
+let extract_store : type a. a component_type -> any_store -> a component_store =
+ fun a (AnyStore (b, x)) ->
+  match eq_comp_type (a, b) with
+  | Some Eq -> x
+  | _ -> failwith "ExtractStoreFailed"
+[@@inline]
+
+let extract_component : type a. a component_type -> any_component -> a component
+    =
+ fun a (AnyComponent b) ->
+  match eq_comp_type (a, get_comp_type b) with
+  | Some Eq -> b
+  | _ -> failwith "ExtractComponentFailed"
+[@@inline]
+
+type entity_location = { archetype_id : int; index_in_archetype : int }
+
+module EntityAllocator = GenerationalAllocator (struct
+  type location = entity_location
+end)
+
+type entity = EntityAllocator.address
+
 type archetype = {
   mask : IntSet.t;
   entities : int Vector.vector;
-  component_stores : (int, component_store) Hashtbl.t;
+  component_stores : (int, any_store) Hashtbl.t;
 }
 
 type world = {
@@ -48,56 +108,65 @@ type world = {
   archetypes : (int, archetype) Hashtbl.t;
 }
 
-let get world entity (comp_type : component_type) =
+let migrate_component idx from_store to_store =
+  match swap_remove from_store idx with
+  | None -> None
+  | Some removed -> begin
+      let new_idx = Vector.length to_store in
+      Vector.push to_store removed;
+      Some new_idx
+    end
+[@@inline]
+
+(*
+  Go through old arch's comp stores, migrate stuff to new store 
+  Add new comp to new arch's comp store 
+  Return new index_in_archetype
+*)
+let migrate_entity entity new_comp from_arch to_arch =
+  let new_idx = Vector.length to_arch.entities in
+  let f (comp_id : int) (AnyStore (comp_type, from_comp_store)) =
+    (* Internal, shouldn't fail *)
+    let to_comp_store =
+      extract_store comp_type (Hashtbl.find to_arch.component_stores comp_id)
+    in
+    migrate_component entity.index_in_archetype from_comp_store to_comp_store
+    |> ignore
+  in
+  Hashtbl.iter f from_arch.component_stores
+
+let get : type a. world -> entity -> a component_type -> (a, string) result =
+ fun world entity (comp_type : a component_type) ->
   (* User input, they might make this fail so we should raise a nice error *)
-  let entity_location = EntityAllocator.get world.entity_allocator entity in
+  let open Result in
+  let* entity_location =
+    EntityAllocator.get world.entity_allocator entity
+    |> Option.to_result "InvalidEntity"
+  in
   (* Internal, should never fail *)
   let archetype = Hashtbl.find world.archetypes entity_location.archetype_id in
   let comp_type_id = get_comp_type_id comp_type in
-  if IntSet.mem comp_type_id archetype.mask then
+  if not (IntSet.mem comp_type_id archetype.mask) then Error "ComponentNotFound"
+  else
     (* Internal, should never fail *)
-    let f store = Vector.get store entity_location.index_in_archetype in
-    let comp =
-      (* PPX-generated *)
-      match Hashtbl.find archetype.component_stores comp_type_id with
-      | PositionStorage store -> Position (f store)
-      | VelocityStorage store -> Velocity (f store)
-      | HealthStorage store -> Health (f store)
-    in
-    Some comp
-  else None
+    let any_store = Hashtbl.find archetype.component_stores comp_type_id in
+    let store = extract_store comp_type any_store in
+    Ok (Vector.get store entity_location.index_in_archetype)
 [@@inline]
 
-let insert world entity comp =
+let insert : type a. world -> entity -> a component -> (unit, string) result =
+ fun world entity comp ->
   (* User input, they might make this fail so we should raise a nice error *)
-  let entity_location = EntityAllocator.get world.entity_allocator entity in
-  (* Internal, should never fail *)
-  let archetype = Hashtbl.find world.archetypes entity_location.archetype_id in
-  let comp_type_id = comp |> get_comp_type |> get_comp_type_id in
-  if IntSet.mem comp_type_id archetype.mask then
-    (* If component exists in archetype, just overwrite *)
-    let f store data =
-      (* Internal, should never fail *)
-      Vector.set store entity_location.index_in_archetype data
-    in
-    match Hashtbl.find archetype.component_stores comp_type_id with
-    (* PPX-generated *)
-    | PositionStorage store -> begin
-        match comp with
-        | Position data -> f store data
-        | _ -> raise (Invalid_argument "error")
-      end
-    | VelocityStorage store -> begin
-        match comp with
-        | Velocity data -> f store data
-        | _ -> raise (Invalid_argument "error")
-      end
-    | HealthStorage store -> begin
-        match comp with
-        | Health data -> f store data
-        | _ -> raise (Invalid_argument "error")
-      end
-  else
+  let open Result in
+  let* entity_location =
+    EntityAllocator.get world.entity_allocator entity
+    |> Option.to_result "InvalidEntity"
+  in
+  (* Shouldn't fail if the archetype was added correctly *)
+  let arch = Hashtbl.find world.archetypes entity_location.archetype_id in
+  let comp_type = get_comp_type comp in
+  let comp_type_id = get_comp_type_id comp_type in
+  if not (IntSet.mem comp_type_id arch.mask) then
     (*
         If component doesn't exist in archetype,
         first check if there's another archetype with the right mask.
@@ -106,27 +175,49 @@ let insert world entity comp =
         If it doesn't, create a new archetype with the right mask and
         copy entity's component to it.
     *)
-    ()
+    (* Try to find an existing archetype with a matching mask *)
+    let new_mask = IntSet.add comp_type_id arch.mask in
+    let new_archetype =
+      Hashtbl.to_seq world.archetypes
+      |> Seq.find (fun (_, a) -> IntSet.equal a.mask new_mask)
+    in
+    match new_archetype with
+    | None -> begin (* Create new archetype *)
+                    Ok () end
+    | Some a -> Ok ()
+  else
+    (* If component exists in archetype, just overwrite *)
+    let any_store = Hashtbl.find arch.component_stores comp_type_id in
+    (* Shouldn't fail if the mask matched *)
+    let store = extract_store comp_type any_store in
+    (* Can't fail if we've generated code correctly *)
+    let component = extract_component comp_type (AnyComponent comp) in
+    Ok
+      (component_map component ~f:(fun data ->
+           Vector.set store entity_location.index_in_archetype data))
 [@@inline]
 
-(*
-let remove world (entity : int) (comp_type : component_type) : unit =
-  (* swap_remove *)
-  let f store =
-    match Vector.length store with
-    | 0 -> ()
-    | n ->
-        let last = Vector.pop_exn store in
-        if n > 1 then Vector.set store entity last
+let remove :
+    type a. world -> entity -> a component_type -> (unit, string) result =
+ fun world entity comp_type ->
+  (* User input, they might make this fail so we should raise a nice error *)
+  let open Result in
+  let* entity_location =
+    EntityAllocator.get world.entity_allocator entity
+    |> Option.to_result "InvalidEntity"
   in
-  match comp_type with
-  | `Position -> f world.component_stores.position
-  | `Velocity -> f world.component_stores.velocity
-  | `Health -> f world.component_stores.health
+  (* Internal, should never fail *)
+  let arch = Hashtbl.find world.archetypes entity_location.archetype_id in
+  let comp_type_id = get_comp_type_id comp_type in
+  if not (IntSet.mem comp_type_id arch.mask) then
+    (* Archetype doesn't contain that component type in their mask *)
+    Error "ComponentNotFound"
+  else
+    let any_store = Hashtbl.find arch.component_stores comp_type_id in
+    (* Shouldn't fail if the mask matched *)
+    let store = extract_store comp_type any_store in
+    Ok (swap_remove store entity_location.index_in_archetype |> ignore)
 [@@inline]
-  *)
-
-(* This wouldn't need to be written through PPX *)
 
 let get_bundle_set comps =
   comps
@@ -155,6 +246,6 @@ let get_bundle_set comps =
    `Position data => `Position => int (position_id) => position Vector.vector
   *)
 
-let spawn _world (_comps : component list) =
+let spawn (type a) _world (_comps : a component list) =
   let _entity_id = 0 in
   0
