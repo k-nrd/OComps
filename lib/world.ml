@@ -121,19 +121,33 @@ let migrate_component idx from_store to_store =
 (*
   Go through old arch's comp stores, migrate stuff to new store 
   Add new comp to new arch's comp store 
-  Return new index_in_archetype
+  Return new location
 *)
-let migrate_entity entity new_comp from_arch to_arch =
+let migrate_entity entity_location new_comp from_arch to_arch to_arch_idx =
   let new_idx = Vector.length to_arch.entities in
+  let new_comp_type = get_comp_type new_comp in
+  let new_comp_type_id = get_comp_type_id new_comp_type in
+  let () =
+    let comp_store =
+      extract_store new_comp_type
+        (Hashtbl.find to_arch.component_stores new_comp_type_id)
+    in
+    component_map new_comp ~f:(fun data -> Vector.push comp_store data)
+  in
   let f (comp_id : int) (AnyStore (comp_type, from_comp_store)) =
     (* Internal, shouldn't fail *)
     let to_comp_store =
       extract_store comp_type (Hashtbl.find to_arch.component_stores comp_id)
     in
-    migrate_component entity.index_in_archetype from_comp_store to_comp_store
-    |> ignore
+    match
+      migrate_component entity_location.index_in_archetype from_comp_store
+        to_comp_store
+    with
+    | None -> failwith "weird"
+    | Some _i -> ignore ()
   in
-  Hashtbl.iter f from_arch.component_stores
+  Hashtbl.iter f from_arch.component_stores;
+  { index_in_archetype = new_idx; archetype_id = to_arch_idx }
 
 let get : type a. world -> entity -> a component_type -> (a, string) result =
  fun world entity (comp_type : a component_type) ->
@@ -182,9 +196,12 @@ let insert : type a. world -> entity -> a component -> (unit, string) result =
       |> Seq.find (fun (_, a) -> IntSet.equal a.mask new_mask)
     in
     match new_archetype with
+    | Some (a_id, a) ->
+        let new_location = migrate_entity entity_location comp arch a a_id in
+        EntityAllocator.update_location world.entity_allocator entity
+          new_location
     | None -> begin (* Create new archetype *)
                     Ok () end
-    | Some a -> Ok ()
   else
     (* If component exists in archetype, just overwrite *)
     let any_store = Hashtbl.find arch.component_stores comp_type_id in
