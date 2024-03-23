@@ -1,141 +1,133 @@
 module type ALLOCATOR_DEF = sig
-  type location
+  type metadata
 end
 
 (** 
-    Generational allocator to manage addresss through entries. 
-    It tracks addresss and handles their allocation, deallocation and liveness. *)
+    Generational allocator to manage entitys through entries. 
+    It tracks entitys and handles their almetadata, dealmetadata and liveness. *)
 module GenerationalAllocator (Def : ALLOCATOR_DEF) : sig
   type t
   (** The type of the generational allocator. *)
 
-  type address = { address : int; generation : int }
+  type entity
   (** The type representing an item. *)
 
-  type location = Def.location
-  (** The type representing the location of an item. *)
+  type metadata = Def.metadata
+  (** The type representing the metadata of an item. *)
 
-  val create : unit -> t
-  (** [create ()] creates a new address allocator.
-      @returns A new address allocator.
+  val create_allocator : unit -> t
+  (** [create ()] creates a new entity allocator.
+      @returns A new entity allocator.
       {[
         let allocator = GenerationalAllocator.create ()
       ]} *)
 
-  val allocate : t -> location -> (address, string) result
-  (** [allocate allocator location_address] allocates a new item in 
-      the allocator within the specified location_address.
+  val allocate : t -> metadata -> entity
+  (** [allocate allocator metadata_entity] allocates a new item in 
+      the allocator within the specified metadata_entity.
       @param allocator The generational allocator.
-      @param location_address The address of the location to allocate the address in.
-      @returns [Ok address] with the new address if successful, or [Error msg] on failure.
+      @param metadata_entity The entity of the metadata to allocate the entity in.
+      @returns entity with the new entity.
       {[
-        let address = GenerationalAllocator.allocate allocator 1
+        let entity = GenerationalAllocator.allocate allocator 1
       ]} *)
 
-  val deallocate : t -> address -> (unit, string) result
-  (** [deallocate allocator address] deallocates the given address from the allocator.
+  val deallocate : t -> entity -> unit
+  (** [deallocate allocator entity] deallocates the given entity from the allocator.
+      Does nothing if the entity has already been deallocated..
+
       @param allocator The generational allocator.
-      @param address The address to deallocate.
-      @returns [Ok ()] if successful, or [Error msg] on failure.
+      @param entity The entity to deallocate.
       {[
-        let result = GenerationalAllocator.deallocate allocator address
+        let () = GenerationalAllocator.deallocate allocator entity
       ]} *)
 
-  val update_location : t -> address -> location -> (unit, string) result
-  (** [update_location allocator address location] updates the location of the 
-      given address in the allocator.
+  val update_metadata : t -> entity -> metadata -> unit
+  (** [update_metadata allocator entity metadata] updates the metadata of the 
+      given entity in the allocator.
+
       @param allocator The generational allocator.
-      @param address The address whose location is to be updated.
-      @param location The new location of the address.
-      @returns [Ok ()] if successful, or [Error msg] on failure.
+      @param entity The entity whose metadata is to be updated.
+      @param metadata The new metadata of the entity.
+      @raises Invalid_argument if the entity has been deallocated
       {[
-        let result = GenerationalAllocator.update_location allocator address new_location
+        GenerationalAllocator.update_metadata allocator entity new_metadata
       ]} *)
 
-  val get : t -> address -> location option
-  (** [get allocator address] Gets the current location of an address.
-      @param allocator The address allocator.
-      @param address The address to get the location for.
-      @returns [address_location] if the address is live.
-      @raises Invalid_argument if the address is not live.
+  val get_metadata : t -> entity -> metadata option
+  (** [get allocator entity] Gets the current metadata of an entity.
+      @param allocator The entity allocator.
+      @param entity The entity to get the metadata for.
+      @returns [Some metadata] if the entity is live, [None] if it is not.
       {[
-        let get = GenerationalAllocator.get allocator address
+        match GenerationalAllocator.get allocator entity with 
+        | Some metadata -> ()
+        | None -> ()
       ]} *)
 
-  val is_live : t -> address -> bool
-  (** [is_live allocator address] checks if the given address is currently live 
+  val is_live : t -> entity -> bool
+  (** [is_live allocator entity] checks if the given entity is currently live 
       (allocated) in the allocator.
-      @param allocator The address allocator.
-      @param address The address to check.
-      @returns [true] if the address is live, [false] otherwise.
+      @param allocator The entity allocator.
+      @param entity The entity to check.
+      @returns [true] if the entity is live, [false] otherwise.
       {[
-        let live = GenerationalAllocator.is_live allocator address
+        let live = GenerationalAllocator.is_live allocator entity
       ]} *)
 end = struct
   open Containers
 
-  type address = { address : int; generation : int }
-  type location = Def.location
+  type entity = { id : int; generation : int }
+  type metadata = Def.metadata
 
-  type address_entry = {
+  type entry_metadata = {
     mutable is_live : bool;
     mutable generation : int;
-    mutable location : location;
+    mutable metadata : metadata;
   }
 
-  type t = { entries : address_entry Vector.vector; mutable free : int list }
+  type t = { entries : entry_metadata Vector.vector; mutable free : int list }
 
-  let create () = { entries = Vector.create (); free = [] }
+  let create_allocator () = { entries = Vector.create (); free = [] }
 
-  let get allocator address =
-    let entry = Vector.get allocator.entries address.address in
-    if entry.is_live && address.generation = entry.generation then
-      Some entry.location
-    else None
-
-  let allocate allocator location =
+  let allocate allocator metadata =
     match allocator.free with
     | index :: rest ->
         allocator.free <- rest;
         let entry = Vector.get allocator.entries index in
-        if entry.is_live then Error "AddressAlreadyAllocated"
+        if entry.is_live then failwith "Freed live entity"
         else begin
           entry.is_live <- true;
-          Ok { address = index; generation = entry.generation }
+          { id = index; generation = entry.generation }
         end
     | [] ->
         let generation = 0 in
-        let new_entry = { is_live = true; generation; location } in
-        Vector.push allocator.entries new_entry;
-        Ok { address = Vector.length allocator.entries - 1; generation }
+        let id = Vector.length allocator.entries in
+        Vector.push allocator.entries { is_live = true; generation; metadata };
+        { id; generation }
 
-  let deallocate allocator address =
-    if address.address >= Vector.length allocator.entries then
-      Error "AddressNotFound"
-    else
-      let entry = Vector.get allocator.entries address.address in
-      if not entry.is_live then Error "AddressAlreadyDeallocated"
-      else begin
-        entry.is_live <- false;
-        entry.generation <- entry.generation + 1;
-        allocator.free <- address.address :: allocator.free;
-        Ok ()
-      end
+  let deallocate allocator entity =
+    (* Can't ever fail if we're allocating correctly *)
+    let entry = Vector.get allocator.entries entity.id in
+    (* Do nothing if entry is not live *)
+    if entry.is_live then begin
+      entry.is_live <- false;
+      entry.generation <- entry.generation + 1;
+      allocator.free <- entity.id :: allocator.free
+    end
 
-  let update_location allocator address location =
-    if address.address >= Vector.length allocator.entries then
-      Error "AddressNotFound"
-    else
-      let entry = Vector.get allocator.entries address.address in
-      if not entry.is_live then Error "AddressAlreadyDeallocated"
-      else begin
-        entry.location <- location;
-        Ok ()
-      end
+  let get_metadata allocator entity =
+    (* Can't ever fail if we're allocating correctly *)
+    let entry = Vector.get allocator.entries entity.id in
+    if entry.is_live && entity.generation = entry.generation then
+      Some entry.metadata
+    else None
 
-  let is_live allocator address =
-    try
-      get allocator address |> ignore;
-      true
-    with _ -> false
+  let update_metadata allocator entity metadata =
+    (* Can't ever fail if we're allocating correctly *)
+    let entry = Vector.get allocator.entries entity.id in
+    if not entry.is_live then failwith "Entity is not live"
+    else entry.metadata <- metadata
+
+  let is_live allocator entity = Option.is_some (get_metadata allocator entity)
 end
