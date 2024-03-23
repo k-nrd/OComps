@@ -3,8 +3,8 @@ module type ALLOCATOR_DEF = sig
 end
 
 (** 
-    Generational allocator to manage entitys through entries. 
-    It tracks entitys and handles their almetadata, dealmetadata and liveness. *)
+    Generational allocator to manage entities through entries. 
+    It tracks entities and associated metadata. *)
 module GenerationalAllocator (Def : ALLOCATOR_DEF) : sig
   type t
   (** The type of the generational allocator. *)
