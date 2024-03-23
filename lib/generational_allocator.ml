@@ -15,7 +15,7 @@ module GenerationalAllocator (Def : ALLOCATOR_DEF) : sig
   type metadata = Def.metadata
   (** The type representing the metadata of an item. *)
 
-  val create_allocator : unit -> t
+  val create : unit -> t
   (** [create ()] creates a new entity allocator.
       @returns A new entity allocator.
       {[
@@ -88,7 +88,7 @@ end = struct
 
   type t = { entries : entry_metadata Vector.vector; mutable free : int list }
 
-  let create_allocator () = { entries = Vector.create (); free = [] }
+  let create () = { entries = Vector.create (); free = [] }
 
   let allocate allocator metadata =
     match allocator.free with
