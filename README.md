@@ -1,10 +1,8 @@
 # OComps
 
-Is an archetypal ECS library.
-
-It tries to be a reasonably simple implementation, but still performant.
+Is a performant and easy to understand archetypal ECS library.
 
 Goals:
-- Exceptional ergonomics (we might use some ppx magic here, but we'll try to make it reasonably transparent)
-- Simple codebase (so advanced users can copy-paste our stuff and hack on it to their heart's desire)
-- Decent performance (same ballpark of average Rust/C++ implementations, hopefully)
+- Exceptional ergonomics (might use some ppx magic, but we'll try to make it reasonably transparent)
+- Simple codebase (advanced users can copy-paste our stuff and hack on it to their heart's desire)
+- Decent performance (ballpark of average Rust/C++ implementations, hopefully)
